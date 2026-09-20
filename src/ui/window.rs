@@ -34,8 +34,8 @@ use std::time::Instant;
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, InvalidateRect,
-    SetBkMode, SetTextColor, UpdateWindow, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HDC,
-    PAINTSTRUCT, TRANSPARENT,
+    LineTo, MoveToEx, SelectObject, SetBkMode, SetTextColor, UpdateWindow, DT_LEFT, DT_SINGLELINE,
+    DT_VCENTER, HDC, PAINTSTRUCT, TRANSPARENT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{ODS_SELECTED, DRAWITEMSTRUCT};
@@ -434,8 +434,16 @@ unsafe fn build_controls(
     mk_button(hwnd, hinst, ID_RAW, "Raw Events", 300, by, 110, f);
     mk_button(hwnd, hinst, ID_EXPORT, "Export CSV", 418, by, 118, f);
 
-    app.btn_startup =
-        mk_button(hwnd, hinst, ID_STARTUP, "Start at sign-in", MARGIN, by + 38, 156, f);
+    app.btn_startup = mk_button(
+        hwnd,
+        hinst,
+        ID_STARTUP,
+        "Start when I sign in to Windows",
+        MARGIN,
+        by + 38,
+        250,
+        f,
+    );
     mk_button(hwnd, hinst, ID_FOLDER, "Open Folder", 300, by + 38, 110, f);
     mk_button(hwnd, hinst, ID_HIDE, "Hide to Tray", 418, by + 38, 118, f);
 
@@ -470,15 +478,31 @@ unsafe fn on_paint(hwnd: HWND, app: &App) {
     EndPaint(hwnd, &ps);
 }
 
-/// Paint one owner-drawn button.
+/// Read a control's caption.
+unsafe fn control_text(h: HWND) -> Vec<u16> {
+    let len = GetWindowTextLengthW(h).max(0);
+    let mut buf = vec![0u16; len as usize + 1];
+    GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32);
+    buf
+}
+
+/// Paint one owner-drawn control: either a push button or the checkbox.
 unsafe fn on_drawitem(app: &App, dis: &DRAWITEMSTRUCT) {
+    if GetDlgCtrlID(dis.hwndItem) as usize == ID_STARTUP {
+        draw_checkbox(app, dis);
+    } else {
+        draw_button(app, dis);
+    }
+}
+
+unsafe fn draw_button(app: &App, dis: &DRAWITEMSTRUCT) {
     let pressed = dis.itemState & ODS_SELECTED != 0;
     let face = if pressed { app.theme.btn_face_down } else { app.theme.btn_face };
 
     // Border first, then the face inset by one pixel: a 1px frame without
     // needing a pen and a separate rectangle call.
     FillRect(dis.hDC, &dis.rcItem, app.theme.btn_border);
-    let inner = RECT {
+    let mut inner = RECT {
         left: dis.rcItem.left + 1,
         top: dis.rcItem.top + 1,
         right: dis.rcItem.right - 1,
@@ -486,41 +510,82 @@ unsafe fn on_drawitem(app: &App, dis: &DRAWITEMSTRUCT) {
     };
     FillRect(dis.hDC, &inner, face);
 
-    let mut len = GetWindowTextLengthW(dis.hwndItem);
-    if len < 0 {
-        len = 0;
-    }
-    let mut buf = vec![0u16; len as usize + 1];
-    GetWindowTextW(dis.hwndItem, buf.as_mut_ptr(), buf.len() as i32);
-
     SetBkMode(dis.hDC, TRANSPARENT as i32);
     SetTextColor(dis.hDC, theme::BTN_TEXT);
+    let text = control_text(dis.hwndItem);
+    DrawTextW(
+        dis.hDC,
+        text.as_ptr(),
+        -1,
+        &mut inner,
+        1 /* DT_CENTER */ | DT_SINGLELINE | DT_VCENTER,
+    );
+}
 
-    // The startup control is a checkbox in spirit; prefix a box glyph so its
-    // state is visible without a real BS_AUTOCHECKBOX (which cannot be themed
-    // dark without owner-drawing it anyway).
-    let is_startup = GetDlgCtrlID(dis.hwndItem) as usize == ID_STARTUP;
-    let text: Vec<u16> = if is_startup {
-        let mark = if app.startup_on { "[x] " } else { "[  ] " };
-        let mut v = wide(mark);
-        v.pop();
-        v.extend_from_slice(&buf[..len as usize]);
-        v.push(0);
-        v
-    } else {
-        buf
+/// A real checkbox: a square that fills in and shows a tick, with the label
+/// beside it -- not a push button wearing a text glyph.
+///
+/// Owner-drawn rather than `BS_AUTOCHECKBOX` because a stock checkbox is
+/// painted by the theme engine and stays light-on-light on a dark window.
+/// Drawing it means also owning the state, which lives in `App::startup_on`
+/// and is re-read from the system whenever a toggle fails.
+unsafe fn draw_checkbox(app: &App, dis: &DRAWITEMSTRUCT) {
+    // No button face: a checkbox sits on the window, it is not a raised
+    // control.
+    FillRect(dis.hDC, &dis.rcItem, app.theme.bg);
+
+    const BOX: i32 = 17;
+    let top = dis.rcItem.top + (dis.rcItem.bottom - dis.rcItem.top - BOX) / 2;
+    let bx = RECT {
+        left: dis.rcItem.left,
+        top,
+        right: dis.rcItem.left + BOX,
+        bottom: top + BOX,
     };
 
-    let mut r = inner;
-    // Centre push buttons; left-align the checkbox-style one so the glyph
-    // does not wander as the label changes.
-    let flags = if is_startup {
-        r.left += 10;
-        DT_LEFT | DT_SINGLELINE | DT_VCENTER
-    } else {
-        1 /* DT_CENTER */ | DT_SINGLELINE | DT_VCENTER
+    let on = app.startup_on;
+    let pressed = dis.itemState & ODS_SELECTED != 0;
+
+    // Border, then interior inset by one pixel.
+    FillRect(dis.hDC, &bx, if on { app.theme.accent } else { app.theme.check_border });
+    let inner = RECT {
+        left: bx.left + 1,
+        top: bx.top + 1,
+        right: bx.right - 1,
+        bottom: bx.bottom - 1,
     };
-    DrawTextW(dis.hDC, text.as_ptr(), -1, &mut r, flags);
+    if on {
+        FillRect(dis.hDC, &inner, app.theme.accent);
+    } else {
+        FillRect(
+            dis.hDC,
+            &inner,
+            if pressed { app.theme.btn_face_down } else { app.theme.check_empty },
+        );
+    }
+
+    if on {
+        // The tick: two strokes, proportioned to the box rather than
+        // hard-coded, so the size constant above is the only thing to change.
+        let old = SelectObject(dis.hDC, app.theme.check_pen as _);
+        let x = bx.left;
+        let y = bx.top;
+        MoveToEx(dis.hDC, x + BOX * 25 / 100, y + BOX * 52 / 100, std::ptr::null_mut());
+        LineTo(dis.hDC, x + BOX * 43 / 100, y + BOX * 70 / 100);
+        LineTo(dis.hDC, x + BOX * 76 / 100, y + BOX * 30 / 100);
+        SelectObject(dis.hDC, old);
+    }
+
+    SetBkMode(dis.hDC, TRANSPARENT as i32);
+    SetTextColor(dis.hDC, if on { theme::VALUE } else { theme::LABEL });
+    let text = control_text(dis.hwndItem);
+    let mut tr = RECT {
+        left: bx.right + 10,
+        top: dis.rcItem.top,
+        right: dis.rcItem.right,
+        bottom: dis.rcItem.bottom,
+    };
+    DrawTextW(dis.hDC, text.as_ptr(), -1, &mut tr, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 }
 
 /// Colour for a static control, chosen from its id.
@@ -602,6 +667,47 @@ fn device_rows(app: &App) -> (String, String) {
     };
     let others: Vec<String> = parts[1..].iter().map(|(_, s)| s.clone()).collect();
     (active, if others.is_empty() { "-".into() } else { others.join(",  ") })
+}
+
+/// The device's true report rate, from the median gap between stored
+/// movement timestamps.
+///
+/// WHY NOT COUNTER DELTAS
+/// ----------------------
+/// The obvious measure -- reports counted over a wall-clock window -- is
+/// wrong in a way that flatters the hardware. If the capture thread is briefly
+/// starved, its `WM_INPUT` messages queue in the OS and then arrive in a burst;
+/// the counter jumps and the computed rate spikes to a number the device is
+/// physically incapable of. That is how this window came to claim a peak of
+/// 999 Hz for a mouse whose stored timestamps are a flat 8 ms apart.
+///
+/// The median inter-report gap cannot be fooled that way: a 125 Hz device
+/// produces 8 ms gaps no matter how the reports are delivered to us.
+fn measured_rate(app: &App) -> Option<(f64, f64)> {
+    use crate::event::EV_MOVE;
+    let q = app.status.recent.lock().ok()?;
+    let mut gaps: Vec<f64> = Vec::new();
+    let mut last: Option<u64> = None;
+    for e in q.iter().filter(|e| e.kind == EV_MOVE) {
+        if let Some(l) = last {
+            let d = e.t_ns.saturating_sub(l);
+            // Discard idle gaps: a pause between movements says nothing about
+            // the polling rate. 100 ms is far longer than any real report gap.
+            if d > 0 && d < 100_000_000 {
+                gaps.push(d as f64 / 1e6);
+            }
+        }
+        last = Some(e.t_ns);
+    }
+    if gaps.len() < 8 {
+        return None;
+    }
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let med = gaps[gaps.len() / 2];
+    if med <= 0.0 {
+        return None;
+    }
+    Some((1000.0 / med, med))
 }
 
 /// Bytes currently on disk for the active session.
@@ -694,15 +800,10 @@ unsafe fn refresh(hwnd: HWND, app: &mut App) {
         &if paused {
             "-".to_string()
         } else {
-            let avg = if app.rate_samples > 0 {
-                app.rate_sum / app.rate_samples as f64
-            } else {
-                0.0
-            };
-            format!(
-                "{:>4.0} Hz    peak {:.0}    avg {:.0}",
-                app.rate_hz, app.rate_peak, avg
-            )
+            match measured_rate(app) {
+                Some((hz, gap)) => format!("{hz:.0} Hz    median gap {gap:.2} ms"),
+                None => format!("{:.0}/s live    (move to measure)", app.rate_hz),
+            }
         },
     );
     set_text(
@@ -867,7 +968,8 @@ fn raw_dump(app: &App) -> String {
     let mut s = String::with_capacity(q.len() * 64);
     s.push_str("      t (s)   dev     dx     dy       x      y   event\r\n");
     s.push_str("--------------------------------------------------------------\r\n");
-    for e in q.iter() {
+    let skip = q.len().saturating_sub(crate::storage::writer::RECENT_SHOWN);
+    for e in q.iter().skip(skip) {
         let what = match e.kind {
             EV_MOVE => "MOVE".to_string(),
             EV_WHEEL => format!(
@@ -955,15 +1057,29 @@ unsafe fn open_raw_window(parent: HWND, app: &mut App) {
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, app as *mut App as isize);
     ShowWindow(hwnd, SW_SHOW);
     refresh_raw(app);
-    SetTimer(hwnd, TIMER_REFRESH, 750, None);
+    SetTimer(hwnd, TIMER_REFRESH, 1500, None);
 }
 
 unsafe fn refresh_raw(app: &App) {
     if app.raw_edit.is_null() {
         return;
     }
+    // EM_GETFIRSTVISIBLELINE / EM_LINESCROLL. Replacing the text resets the
+    // view to the top, which made the window unreadable while it was live:
+    // you could not scroll back without it yanking you away twice a second.
+    const EM_GETFIRSTVISIBLELINE: u32 = 0x00CE;
+    const EM_LINESCROLL: u32 = 0x00B6;
+
+    let first = SendMessageW(app.raw_edit, EM_GETFIRSTVISIBLELINE, 0, 0);
     let text = wide(&raw_dump(app));
     SetWindowTextW(app.raw_edit, text.as_ptr());
+    if first > 0 {
+        SendMessageW(app.raw_edit, EM_LINESCROLL, 0, first);
+    }
+    // Force a full erase-and-repaint. An edit control repaints text without
+    // erasing first, so without this each refresh draws on top of the last
+    // and the glyphs smear into an unreadable bold mess.
+    InvalidateRect(app.raw_edit, std::ptr::null(), 1);
 }
 
 unsafe extern "system" fn raw_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -974,9 +1090,16 @@ unsafe extern "system" fn raw_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             0
         }
         // Dark background for the read-only edit control.
+        //
+        // Deliberately OPAQUE, not TRANSPARENT. An edit control repaints its
+        // text without erasing first, so a transparent background mode makes
+        // every refresh overdraw the previous frame and the glyphs smear into
+        // an unreadable bold mess. OPAQUE + SetBkColor makes each character
+        // cell paint its own background, which is what actually clears it.
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT if !ptr.is_null() => {
             let app = &*ptr;
-            SetBkMode(wp as HDC, TRANSPARENT as i32);
+            const OPAQUE_BK: i32 = 2;
+            SetBkMode(wp as HDC, OPAQUE_BK);
             SetTextColor(wp as HDC, theme::VALUE);
             windows_sys::Win32::Graphics::Gdi::SetBkColor(wp as HDC, theme::BG);
             app.theme.bg as LRESULT

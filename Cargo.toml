@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "human_telemetry"
 version = "0.1.0"
 edition = "2021"
@@ -22,6 +22,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Performance",
     "Win32_System_Threading",
+    "Win32_System_Time",
     "Win32_System_Power",
     "Win32_System_SystemServices",
     "Win32_System_SystemInformation",
@@ -45,3 +46,4 @@ strip = true
 # NOTE: deliberately NOT panic = "abort". A panic on any thread must still run
 # the panic hook so the writer can flush buffered events and mark the session
 # interrupted. Aborting would discard up to one batch of real data.
+

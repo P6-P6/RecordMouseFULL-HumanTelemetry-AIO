@@ -12,6 +12,18 @@ to a separate program that reads this one's output.
 **Status: recorder complete.** Runs in the tray, records continuously, survives
 crashes, and reports data loss honestly.
 
+![Dashboard](docs/dashboard.png)
+
+**Raw Events** shows the last 200 records exactly as stored, so you can confirm
+the dataset is what it claims to be rather than trusting a summary counter:
+
+![Raw events](docs/raw-events.png)
+
+The rows above are a real target acquisition: `dx` decaying 5, 4, 3, 2, 1 as the
+hand decelerates onto the target, then `LEFT_DOWN`, then `LEFT_UP` 92 ms later.
+That deceleration profile and click dwell is the behavioural signal this whole
+project exists to capture.
+
 ---
 
 ## Why this is not another mouse recorder
@@ -191,6 +203,54 @@ These are deliberately separate numbers, and they are not meant to match:
 
 ---
 
+## Durability
+
+Recording runs for weeks, so the question is not "does it save" but "how much
+can a power cut take with it". Three layers, cheapest first:
+
+| Layer | Interval | Protects against |
+|---|---|---|
+| Compressed frame written + flushed | ~1 s | The process dying |
+| `sync_all` forced to the physical disk | 60 s | The **machine** dying (power cut) |
+| Session rolled over on the local clock hour | 1 h | Bounding any single session |
+
+The distinction that matters: a flush only hands bytes to the Windows cache, and
+an abrupt power cut loses whatever the OS had not written back — potentially
+tens of seconds. `sync_all` is the real barrier, and once a minute costs one
+fsync on a file measured in kilobytes.
+
+Frames are independently compressed, so a torn tail costs one frame, not the
+file. A session that never recorded a clean shutdown is *marked* interrupted on
+the next run, never repaired or deleted.
+
+---
+
+## What each session records about itself
+
+Beyond the events, every `session.json` is self-describing, so a dataset copied
+off this machine years from now still means something:
+
+| Group | Fields |
+|---|---|
+| **When** | UTC and **local** start/end, UTC offset, timezone name, weekday, local hour, day part (morning/afternoon/evening/night/late_night) |
+| **Where** | Computer name, user name, machine GUID, true Windows version |
+| **Hardware** | Every mouse: device path, VID/PID, buttons, driver-reported rate |
+| **Display** | Every monitor: bounds, work area, DPI, scaling, primary |
+| **Ballistics** | Pointer speed, Enhance Pointer Precision, both SmoothMouse curves |
+| **Health** | Reports received, events written, dropped, peak queue, write latency, writer errors, clean/interrupted |
+
+Local time is stored alongside UTC on purpose. "Does this person move
+differently at 2am" is a first-class question for this dataset, and UTC alone
+cannot answer it without knowing where the machine was. `machine_guid` is the
+stable machine identity — a computer name can be changed, the GUID cannot — so
+desktop and laptop data never silently pool together.
+
+The Windows version is read from the registry rather than `GetVersion`, which
+has been shimmed since Windows 8.1 and reports "6.2.9200" to any process without
+a compatibility manifest.
+
+---
+
 ## Honest limits
 
 - **`cursor_x`/`cursor_y` are read at handler time, not event time.** Close, but
@@ -198,7 +258,10 @@ These are deliberately separate numbers, and they are not meant to match:
   integrated deltas against truth. Treat cursor position as an approximation of
   the post-ballistics layer, not a measurement of it.
 - **Your sampling floor is the mouse's polling rate.** Nothing in software can
-  recover motion between reports.
+  recover motion between reports. The dashboard reports the *measured* rate as
+  the median gap between stored timestamps, not a counter delta over wall clock:
+  if the capture thread is briefly starved its reports arrive in a burst, and a
+  counter-based rate then claims a figure the hardware cannot physically reach.
 - **No target information.** What you were aiming at needs UI Automation, which
   is slow and can block, so it cannot touch the capture path.
 - **Mouse lift / clutch is not recorded.** Ordinary mice do not report it. Any

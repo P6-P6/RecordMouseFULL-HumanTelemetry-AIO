@@ -27,8 +27,22 @@ pub struct SessionHeader {
 
     pub start_wall_utc: String,
     pub start_unix_ms: u64,
+    /// Local wall clock with offset, e.g. `2026-09-20T16:07:59.457-04:00`.
+    ///
+    /// Time-of-day behaviour is a first-class question for this dataset -- does
+    /// this person move differently late at night? -- and UTC alone cannot
+    /// answer it without knowing where the machine was.
+    pub start_wall_local: String,
+    pub utc_offset_minutes: i32,
+    pub timezone: String,
+    pub start_weekday: String,
+    pub start_local_hour: u8,
+    /// morning / afternoon / evening / night / late_night
+    pub start_day_part: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_wall_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_wall_local: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_unix_ms: Option<u64>,
 
@@ -61,10 +75,18 @@ pub struct SessionHeader {
     pub segments: Vec<String>,
 }
 
+/// Which machine, and which account on it, produced this data.
+///
+/// The same person behaves differently on a desktop with a gaming mouse and on
+/// a laptop trackpad, so a dataset that pools them without a machine label is
+/// not analysable. `machine_guid` is the stable identity: `computer_name` can
+/// be changed at any time, the GUID cannot.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct OsInfo {
     pub version: String,
     pub computer_name: String,
+    pub user_name: String,
+    pub machine_guid: String,
 }
 
 impl OsInfo {
@@ -72,17 +94,131 @@ impl OsInfo {
         Self {
             version: os_version_string(),
             computer_name: std::env::var("COMPUTERNAME").unwrap_or_default(),
+            user_name: std::env::var("USERNAME").unwrap_or_default(),
+            machine_guid: machine_guid(),
         }
     }
 }
 
+/// `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`: generated at install
+/// and stable for the life of the Windows installation.
+fn machine_guid() -> String {
+    reg_sz(r"SOFTWARE\Microsoft\Cryptography", "MachineGuid")
+}
+
+/// Path to the key holding the true OS version.
+const CURRENT_VERSION_KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+
+/// The real Windows version, read from the registry.
+///
+/// Deliberately not `GetVersion`/`GetVersionEx`: since Windows 8.1 those are
+/// shimmed and report 6.2.9200 ("Windows 8") to any process without a
+/// compatibility manifest. Recording that would put a flatly false OS version
+/// in every session header -- and these headers are meant to still be
+/// trustworthy years from now. The registry value is not shimmed.
 fn os_version_string() -> String {
-    use windows_sys::Win32::System::SystemInformation::GetVersion;
-    // GetVersion is shimmed on modern Windows, so this is a coarse marker, not
-    // a precise build id. Recorded as-is rather than guessed at.
-    // SAFETY: no arguments, no failure mode.
-    let v = unsafe { GetVersion() };
-    format!("{}.{}.{}", v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFFFF)
+    let product = reg_sz(CURRENT_VERSION_KEY, "ProductName");
+    let display = reg_sz(CURRENT_VERSION_KEY, "DisplayVersion");
+    let build = reg_sz(CURRENT_VERSION_KEY, "CurrentBuild");
+    let ubr = reg_dword(CURRENT_VERSION_KEY, "UBR");
+
+    // Windows 11 still says "Windows 10" in ProductName; build 22000+ is the
+    // documented way to tell them apart.
+    let name = if product.is_empty() {
+        "Windows".to_string()
+    } else if build.parse::<u32>().map(|b| b >= 22_000).unwrap_or(false) {
+        product.replace("Windows 10", "Windows 11")
+    } else {
+        product
+    };
+
+    let mut out = name;
+    if !display.is_empty() {
+        out.push(' ');
+        out.push_str(&display);
+    }
+    if !build.is_empty() {
+        out.push_str(" (build ");
+        out.push_str(&build);
+        if let Some(u) = ubr {
+            out.push('.');
+            out.push_str(&u.to_string());
+        }
+        out.push(')');
+    }
+    out
+}
+
+/// Read a REG_SZ from HKLM, returning an empty string when absent.
+fn reg_sz(subkey: &str, value: &str) -> String {
+    hklm_value(subkey, value)
+        .map(|(_, b)| {
+            let u: Vec<u16> = b
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .take_while(|&c| c != 0)
+                .collect();
+            String::from_utf16_lossy(&u)
+        })
+        .unwrap_or_default()
+}
+
+/// Read a REG_DWORD from HKLM.
+fn reg_dword(subkey: &str, value: &str) -> Option<u32> {
+    let (_, b) = hklm_value(subkey, value)?;
+    if b.len() < 4 {
+        return None;
+    }
+    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+fn hklm_value(subkey: &str, value: &str) -> Option<(u32, Vec<u8>)> {
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
+        KEY_WOW64_64KEY,
+    };
+    let sub: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
+    let name: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut key: HKEY = std::ptr::null_mut();
+    // KEY_WOW64_64KEY: read the 64-bit view regardless of this build's
+    // bitness, so the value matches what other tools report.
+    // SAFETY: NUL-terminated subkey; `key` receives the handle.
+    let rc = unsafe {
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, sub.as_ptr(), 0, KEY_READ | KEY_WOW64_64KEY, &mut key)
+    };
+    if rc != 0 {
+        return None;
+    }
+    let mut ty = 0u32;
+    let mut len = 0u32;
+    // SAFETY: null buffer asks for the required size.
+    unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null(),
+            &mut ty,
+            std::ptr::null_mut(),
+            &mut len,
+        )
+    };
+    if len == 0 || len > 4096 {
+        // SAFETY: handle from a successful open.
+        unsafe { RegCloseKey(key) };
+        return None;
+    }
+    let mut buf = vec![0u8; len as usize];
+    // SAFETY: buffer sized by the call above.
+    let rc = unsafe {
+        RegQueryValueExW(key, name.as_ptr(), std::ptr::null(), &mut ty, buf.as_mut_ptr(), &mut len)
+    };
+    // SAFETY: handle from a successful open, unused afterwards.
+    unsafe { RegCloseKey(key) };
+    if rc != 0 {
+        return None;
+    }
+    buf.truncate(len as usize);
+    Some((ty, buf))
 }
 
 pub struct Session {
@@ -102,13 +238,24 @@ impl Session {
         let dir = root.join("sessions").join(&id);
         std::fs::create_dir_all(&dir)?;
 
+        let offset = crate::clock::local_offset_minutes();
+        let hour = crate::clock::local_hour(now_ms, offset);
         let header = SessionHeader {
             session_id: id,
             app_version: APP_VERSION.to_string(),
             format_version: crate::storage::segment::FORMAT_VERSION,
             start_wall_utc: iso,
             start_unix_ms: now_ms,
+            start_wall_local: crate::clock::iso8601_local(now_ms, offset),
+            utc_offset_minutes: offset,
+            timezone: crate::clock::local_timezone_name(),
+            start_weekday: crate::clock::WEEKDAY_NAMES
+                [crate::clock::weekday(now_ms) as usize]
+                .to_string(),
+            start_local_hour: hour,
+            start_day_part: crate::clock::day_part(hour).to_string(),
             end_wall_utc: None,
+            end_wall_local: None,
             end_unix_ms: None,
             qpc_frequency,
             devices: Vec::new(),
@@ -171,6 +318,8 @@ impl Session {
         let ms = unix_millis();
         self.header.end_unix_ms = Some(ms);
         self.header.end_wall_utc = Some(iso8601_utc(ms));
+        self.header.end_wall_local =
+            Some(crate::clock::iso8601_local(ms, self.header.utc_offset_minutes));
         self.header.clean_shutdown = true;
         self.save()
     }

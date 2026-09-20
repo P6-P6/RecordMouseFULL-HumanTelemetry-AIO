@@ -19,8 +19,9 @@
 use windows_sys::Win32::Foundation::{COLORREF, HWND};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateFontW, CreateSolidBrush, DeleteObject, ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS,
-    DEFAULT_CHARSET, FF_DONTCARE, FIXED_PITCH, HBRUSH, HFONT, OUT_DEFAULT_PRECIS, VARIABLE_PITCH,
+    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, ANTIALIASED_QUALITY,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, FF_DONTCARE, FIXED_PITCH, HBRUSH, HFONT, HPEN,
+    OUT_DEFAULT_PRECIS, PS_SOLID, VARIABLE_PITCH,
 };
 
 /// `DWMWA_USE_IMMERSIVE_DARK_MODE`. Value 20 on Windows 10 2004+ and 11.
@@ -48,6 +49,11 @@ pub const WARN: COLORREF = rgb(250, 204, 21);
 pub const BAD: COLORREF = rgb(248, 113, 113);
 pub const IDLE: COLORREF = rgb(148, 163, 184);
 
+/// Checkbox: unticked box interior, and the tick itself.
+pub const CHECK_EMPTY: COLORREF = rgb(32, 32, 38);
+pub const CHECK_BORDER: COLORREF = rgb(88, 90, 100);
+pub const CHECK_MARK: COLORREF = rgb(255, 255, 255);
+
 pub const BTN_FACE: COLORREF = rgb(39, 39, 46);
 pub const BTN_FACE_DOWN: COLORREF = rgb(58, 58, 68);
 pub const BTN_BORDER: COLORREF = rgb(66, 66, 76);
@@ -58,6 +64,13 @@ pub struct Theme {
     pub btn_face: HBRUSH,
     pub btn_face_down: HBRUSH,
     pub btn_border: HBRUSH,
+    /// Filled box of a ticked checkbox.
+    pub accent: HBRUSH,
+    /// Interior of an unticked checkbox.
+    pub check_empty: HBRUSH,
+    pub check_border: HBRUSH,
+    /// Two strokes of the tick. 2px so it reads at this size.
+    pub check_pen: HPEN,
     /// UI text.
     pub font: HFONT,
     /// Section headings: smaller, semibold.
@@ -102,6 +115,10 @@ impl Theme {
                 btn_face: CreateSolidBrush(BTN_FACE),
                 btn_face_down: CreateSolidBrush(BTN_FACE_DOWN),
                 btn_border: CreateSolidBrush(BTN_BORDER),
+                accent: CreateSolidBrush(ACCENT),
+                check_empty: CreateSolidBrush(CHECK_EMPTY),
+                check_border: CreateSolidBrush(CHECK_BORDER),
+                check_pen: CreatePen(PS_SOLID, 2, CHECK_MARK),
                 font: font(-13, 400, "Segoe UI", false),
                 font_head: font(-12, 600, "Segoe UI", false),
                 font_big: font(-22, 600, "Segoe UI", false),
@@ -113,9 +130,18 @@ impl Theme {
     /// # Safety
     /// Call once, after every window using these objects is destroyed.
     pub unsafe fn destroy(&self) {
-        for o in [self.bg, self.btn_face, self.btn_face_down, self.btn_border] {
+        for o in [
+            self.bg,
+            self.btn_face,
+            self.btn_face_down,
+            self.btn_border,
+            self.accent,
+            self.check_empty,
+            self.check_border,
+        ] {
             DeleteObject(o as _);
         }
+        DeleteObject(self.check_pen as _);
         for f in [self.font, self.font_head, self.font_big, self.font_mono] {
             DeleteObject(f as _);
         }

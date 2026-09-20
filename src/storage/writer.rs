@@ -33,6 +33,19 @@ use std::time::{Duration, Instant};
 const POLL_MS: u64 = 20;
 /// How often health is sampled into the context timeline and the header saved.
 const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How often buffered data is forced all the way onto the physical disk.
+///
+/// Frames are written and `flush`ed every second already, which protects
+/// against the *process* dying. It does not protect against the *machine*
+/// dying: a flush only hands bytes to the Windows cache, and an abrupt power
+/// cut loses whatever the OS had not written back yet -- potentially tens of
+/// seconds.
+///
+/// `sync_all` is the real durability barrier. Once a minute costs one fsync on
+/// a file measured in kilobytes, which is nothing next to bounding worst-case
+/// loss from "however long Windows felt like caching" to 60 seconds.
+const SYNC_INTERVAL: Duration = Duration::from_secs(60);
 /// Roll to a new segment past this size, so no single file grows unbounded.
 const ROTATE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -56,8 +69,16 @@ pub enum WriterCmd {
     NewSession(String),
 }
 
-/// How many of the most recent events the diagnostics view keeps.
-pub const RECENT_CAPACITY: usize = 200;
+/// How many of the most recent events are kept for diagnostics.
+///
+/// The raw-events window only shows the last `RECENT_SHOWN`, but the report-rate
+/// median is computed over the whole buffer: a 200-event window is small enough
+/// that one slow patch of movement drags the median from 1 ms to 8 ms, which
+/// made the dashboard disagree with the stored data. 2000 events is ~64 KB and
+/// gives a median that holds still.
+pub const RECENT_CAPACITY: usize = 2000;
+/// How many of those the raw-events window displays.
+pub const RECENT_SHOWN: usize = 200;
 /// Upper bound on distinct device slots tracked for attribution.
 pub const MAX_DEVICES: usize = 16;
 
@@ -238,7 +259,17 @@ fn run(
     let mut pending: Vec<Event> = Vec::with_capacity(FRAME_EVENTS * 2);
     let mut last_frame = Instant::now();
     let mut last_health = Instant::now();
+    let mut last_sync = Instant::now();
     let mut max_latency_us: u64 = 0;
+
+    // Sessions roll over on the local clock hour. Two reasons: it bounds how
+    // much any single session can lose or contain, and it means every session
+    // carries one time-of-day label, so "does this person move differently
+    // late at night" is a group-by rather than a windowing problem.
+    let mut session_hour = {
+        let off = crate::clock::local_offset_minutes();
+        crate::clock::local_hour(crate::clock::unix_millis(), off)
+    };
 
     loop {
         let finishing = stop.load(Ordering::Acquire);
@@ -332,8 +363,31 @@ fn run(
             write_context(&mut active, &resolved);
         }
 
+        // ---- durability --------------------------------------------------
+        if last_sync.elapsed() >= SYNC_INTERVAL {
+            if let Err(e) = active.seg.sync() {
+                eprintln!("[writer] periodic sync failed: {e}");
+                active.session.header.writer_errors += 1;
+            }
+            if let Some(o) = active.ctx_out.as_mut() {
+                let _ = o.flush();
+                let _ = o.get_ref().sync_all();
+            }
+            last_sync = Instant::now();
+        }
+
         // ---- commands ----------------------------------------------------
         let mut rotate_reason: Option<String> = None;
+
+        // Hourly rollover on the wall clock.
+        let now_hour = {
+            let off = crate::clock::local_offset_minutes();
+            crate::clock::local_hour(crate::clock::unix_millis(), off)
+        };
+        if now_hour != session_hour {
+            session_hour = now_hour;
+            rotate_reason = Some("hourly_rollover".into());
+        }
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 WriterCmd::NewSession(r) => rotate_reason = Some(r),
@@ -361,6 +415,7 @@ fn run(
                             active = a;
                             status.adopt(&active.session);
                             max_latency_us = 0;
+                            last_sync = Instant::now();
                         }
                         Err(e) => {
                             eprintln!("[writer] cannot open replacement session: {e}");
