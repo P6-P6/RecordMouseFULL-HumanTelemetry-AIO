@@ -270,6 +270,16 @@ pub fn run(
         build_controls(hwnd, &mut app, hinst);
         app.tray = Some(Tray::new(hwnd, TrayState::Recording));
         if app.visible {
+            // ShowWindow twice, deliberately.
+            //
+            // A process's *first* ShowWindow call ignores the nCmdShow it is
+            // given and uses the value the launching process put in
+            // STARTUPINFO instead. So a parent that starts us hidden or
+            // minimised -- a shortcut set to "minimized", Task Scheduler, some
+            // launchers, PowerShell's Start-Process -- leaves the dashboard
+            // invisible no matter what we pass, and the recorder looks like it
+            // failed to start. The second call honours the parameter.
+            ShowWindow(hwnd, SW_SHOW);
             ShowWindow(hwnd, SW_SHOW);
             UpdateWindow(hwnd);
             SetTimer(hwnd, TIMER_REFRESH, REFRESH_MS, None);
@@ -887,7 +897,13 @@ unsafe fn refresh(hwnd: HWND, app: &mut App) {
 
 unsafe fn show_window(hwnd: HWND, app: &mut App, show: bool) {
     app.visible = show;
+    // Twice when showing, for the same STARTUPINFO reason as at startup: if the
+    // process began with --tray this may still be its first ShowWindow call,
+    // and "Open Dashboard" would silently do nothing.
     ShowWindow(hwnd, if show { SW_SHOW } else { SW_HIDE });
+    if show {
+        ShowWindow(hwnd, SW_SHOW);
+    }
     if show {
         SetForegroundWindow(hwnd);
         SetTimer(hwnd, TIMER_REFRESH, REFRESH_MS, None);
