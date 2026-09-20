@@ -1,0 +1,5 @@
+# Build artifacts go to LOCAL disk, never to G:.
+# target/ holds tens of thousands of small files; on a Google Drive virtual
+# filesystem that thrashes sync and makes compiles crawl.
+[build]
+target-dir = "C:/Users/Ryzen9/AppData/Local/humantelemetry_build"
