@@ -80,10 +80,11 @@ const V_QUEUE: usize = 4;
 const V_LATENCY: usize = 5;
 const V_MOUSE: usize = 6;
 const V_OTHER: usize = 7;
-const V_STARTED: usize = 8;
-const V_ONDISK: usize = 9;
-const V_FOLDER: usize = 10;
-const V_COUNT: usize = 11;
+const V_MACHINE: usize = 8;
+const V_STARTED: usize = 9;
+const V_ONDISK: usize = 10;
+const V_FOLDER: usize = 11;
+const V_COUNT: usize = 12;
 
 // ---- geometry -------------------------------------------------------------
 const W: i32 = 560;
@@ -103,6 +104,9 @@ pub struct App {
     pub status: Arc<SharedStatus>,
     pub ring: Arc<Ring>,
     pub devices: Vec<DeviceInfo>,
+    /// "PCNAME / user" -- which machine produced this data. Resolved once at
+    /// startup; it cannot change while the process runs.
+    machine: String,
 
     theme: Theme,
     labels: [HWND; V_COUNT],
@@ -192,7 +196,7 @@ pub fn run(
     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     // Size the *client* area, then grow for the frame, so the layout constants
     // mean what they say regardless of DPI or caption height.
-    let mut rc = RECT { left: 0, top: 0, right: W, bottom: 640 };
+    let mut rc = RECT { left: 0, top: 0, right: W, bottom: 664 };
     // SAFETY: valid rect and style.
     unsafe { AdjustWindowRect(&mut rc, style, 0) };
 
@@ -227,6 +231,14 @@ pub fn run(
         status,
         ring,
         devices,
+        machine: {
+            let os = crate::storage::session::OsInfo::probe();
+            if os.user_name.is_empty() {
+                os.computer_name
+            } else {
+                format!("{} / {}", os.computer_name, os.user_name)
+            }
+        },
         theme,
         labels: [std::ptr::null_mut(); V_COUNT],
         status_label: std::ptr::null_mut(),
@@ -395,7 +407,12 @@ unsafe fn build_controls(
         ("HARDWARE", &[("Active mouse", V_MOUSE), ("Also present", V_OTHER)]),
         (
             "SESSION",
-            &[("Started", V_STARTED), ("On disk", V_ONDISK), ("Folder", V_FOLDER)],
+            &[
+                ("This PC", V_MACHINE),
+                ("Started", V_STARTED),
+                ("On disk", V_ONDISK),
+                ("Folder", V_FOLDER),
+            ],
         ),
     ];
 
@@ -828,10 +845,30 @@ unsafe fn refresh(hwnd: HWND, app: &mut App) {
     set_text(app.labels[V_MOUSE], &active);
     set_text(app.labels[V_OTHER], &others);
 
-    // Session id starts with an ISO timestamp; the time of day is the useful
-    // part on screen, and the full id is in the folder path below.
-    let id = app.status.session_id();
-    let started = id.get(11..19).map(|s| s.replace('-', ":")).unwrap_or(id.clone());
+    set_text(app.labels[V_MACHINE], &app.machine);
+
+    // Start time, in LOCAL time.
+    //
+    // The session id is UTC, and slicing the clock out of it while deriving the
+    // weekday and day part from local time put "21:28 ... afternoon" on screen:
+    // two different timezones in one row. Everything here comes off the same
+    // local conversion now. The UTC id is still in the folder path below, and
+    // both are in session.json.
+    let start_ms = app.status.session_start_unix_ms.load(Ordering::Relaxed);
+    let started = if start_ms > 0 {
+        let off = crate::clock::local_offset_minutes();
+        let local_iso = crate::clock::iso8601_local(start_ms, off);
+        let hhmmss = local_iso.get(11..19).unwrap_or("").to_string();
+        let local_ms = (start_ms as i64 + off as i64 * 60_000).max(0) as u64;
+        format!(
+            "{}   {}, {}",
+            hhmmss,
+            crate::clock::WEEKDAY_NAMES[crate::clock::weekday(local_ms) as usize],
+            crate::clock::day_part(crate::clock::local_hour(start_ms, off))
+        )
+    } else {
+        "-".to_string()
+    };
     set_text(app.labels[V_STARTED], &started);
     set_text(app.labels[V_ONDISK], &human_bytes(session_bytes(app)));
 
