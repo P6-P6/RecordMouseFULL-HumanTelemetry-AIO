@@ -91,6 +91,12 @@ reasons that both disguise themselves as compile errors:
 The script locates `vcvars64.bat` itself and handles both. Build artifacts are
 redirected to local disk by `.cargo/config.toml`.
 
+**Stop the recorder before replacing `HumanTelemetry.exe`.** If a copy is
+running from that path, Windows keeps the old executable image cached and
+launching the "new" exe silently runs the old code -- the files hash identically
+while behaving differently, which is a memorable hour to lose. This bites
+hardest when the project lives on a virtual filesystem such as Google Drive.
+
 ---
 
 ## Command line

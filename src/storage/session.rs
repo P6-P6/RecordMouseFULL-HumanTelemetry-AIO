@@ -27,17 +27,33 @@ pub struct SessionHeader {
 
     pub start_wall_utc: String,
     pub start_unix_ms: u64,
+    // ---- added after v0.1.0 ------------------------------------------------
+    // Every field below carries `#[serde(default)]`.
+    //
+    // Without it, adding a field makes serde *require* it, and every session
+    // recorded before the change stops deserializing -- which silently breaks
+    // `list`, `export`, and most seriously `recover_interrupted`, which skips
+    // headers it cannot parse and would therefore never mark an old crashed
+    // session. The whole premise of this format is that raw data stays
+    // readable years later, so a schema addition must never orphan existing
+    // recordings.
     /// Local wall clock with offset, e.g. `2026-09-20T16:07:59.457-04:00`.
     ///
     /// Time-of-day behaviour is a first-class question for this dataset -- does
     /// this person move differently late at night? -- and UTC alone cannot
     /// answer it without knowing where the machine was.
+    #[serde(default)]
     pub start_wall_local: String,
+    #[serde(default)]
     pub utc_offset_minutes: i32,
+    #[serde(default)]
     pub timezone: String,
+    #[serde(default)]
     pub start_weekday: String,
+    #[serde(default)]
     pub start_local_hour: u8,
     /// morning / afternoon / evening / night / late_night
+    #[serde(default)]
     pub start_day_part: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_wall_utc: Option<String>,
@@ -85,7 +101,10 @@ pub struct SessionHeader {
 pub struct OsInfo {
     pub version: String,
     pub computer_name: String,
+    /// Added after v0.1.0 -- see the note on `SessionHeader`.
+    #[serde(default)]
     pub user_name: String,
+    #[serde(default)]
     pub machine_guid: String,
 }
 
@@ -387,6 +406,61 @@ mod tests {
         p.push(format!("mp_sess_{}_{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         p
+    }
+
+    /// A header written by an older build must still deserialize.
+    ///
+    /// This is the regression test for a real break: adding `user_name`,
+    /// `machine_guid` and the local-time fields made serde require them, and
+    /// every session recorded before that change became unreadable -- which
+    /// also silently disabled crash recovery for those sessions, because
+    /// `recover_interrupted` skips headers it cannot parse.
+    #[test]
+    fn a_header_from_an_older_build_still_loads() {
+        // Exactly the v0.1.0 shape: no local-time fields, no user_name, no
+        // machine_guid.
+        let old = r#"{
+            "session_id": "2026-09-20T19-45-40-092_55e8",
+            "app_version": "0.1.0",
+            "format_version": 1,
+            "start_wall_utc": "2026-09-20T19:45:40.092Z",
+            "start_unix_ms": 1789069540092,
+            "qpc_frequency": 10000000,
+            "devices": [],
+            "monitors": [],
+            "ballistics": {
+                "pointer_speed": 7,
+                "mouse_threshold1": 6,
+                "mouse_threshold2": 10,
+                "enhance_pointer_precision": 1,
+                "smooth_mouse_x_curve": [],
+                "smooth_mouse_y_curve": [],
+                "curve_x": [],
+                "curve_y": []
+            },
+            "os": { "version": "6.2.9200", "computer_name": "RYZEN-964" },
+            "reports_received": 27000,
+            "events_written": 27269,
+            "events_dropped": 0,
+            "peak_queue_depth": 21,
+            "max_write_latency_us": 4424,
+            "writer_errors": 0,
+            "clean_shutdown": false,
+            "interrupted": true,
+            "start_reason": "startup",
+            "segments": ["events-0000.mpseg"]
+        }"#;
+
+        let h: SessionHeader = serde_json::from_str(old).expect("old header must still parse");
+        // The data that was actually recorded is intact...
+        assert_eq!(h.events_written, 27269);
+        assert_eq!(h.os.computer_name, "RYZEN-964");
+        assert!(h.interrupted);
+        // ...and the fields that did not exist yet default rather than fail.
+        assert_eq!(h.os.user_name, "");
+        assert_eq!(h.os.machine_guid, "");
+        assert_eq!(h.utc_offset_minutes, 0);
+        assert_eq!(h.start_wall_local, "");
     }
 
     #[test]
