@@ -29,6 +29,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Console",
     "Win32_System_Shutdown",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
     "Win32_Devices_HumanInterfaceDevice",
     "Win32_Devices_DeviceAndDriverInstallation",
 ] }
