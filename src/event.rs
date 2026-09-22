@@ -71,7 +71,22 @@ pub const EVENT_SIZE: usize = 32;
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct Event {
-    /// ns since session start (QPC), taken at `WM_INPUT` handler entry.
+    /// Monotonic QPC nanoseconds, taken at `WM_INPUT` handler entry.
+    ///
+    /// **Relative to process start, not session start.** The clock is created
+    /// once when recording begins and keeps running across session rollovers,
+    /// so a session opened hours later still carries timestamps counted from
+    /// the original origin. Map to wall clock with the session header's
+    /// `clock_origin_unix_ms`:
+    ///
+    /// ```text
+    /// wall_unix_ms = clock_origin_unix_ms + t_ns / 1_000_000
+    /// ```
+    ///
+    /// The counter also keeps advancing while the machine is asleep on many
+    /// systems, so a long gap between consecutive timestamps is normal and
+    /// means idle-or-suspended, not data loss. Check the context timeline for
+    /// a `power` record to tell the two apart.
     pub t_ns: u64,
     pub kind: u8,
     pub flags: u8,

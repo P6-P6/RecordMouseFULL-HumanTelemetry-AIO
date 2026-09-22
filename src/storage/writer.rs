@@ -46,6 +46,13 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 /// a file measured in kilobytes, which is nothing next to bounding worst-case
 /// loss from "however long Windows felt like caching" to 60 seconds.
 const SYNC_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How old a session must be before an *automatic* rollover may replace it.
+///
+/// Without this, waking from sleep produced a session containing seven events
+/// and lasting one second, because the hourly and resume triggers both fired.
+/// A user-requested "Save + New Session" ignores this.
+const MIN_SESSION_LIFETIME: Duration = Duration::from_secs(30);
 /// Roll to a new segment past this size, so no single file grows unbounded.
 const ROTATE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -260,6 +267,7 @@ fn run(
     let mut last_frame = Instant::now();
     let mut last_health = Instant::now();
     let mut last_sync = Instant::now();
+    let mut session_age = Instant::now();
     let mut max_latency_us: u64 = 0;
 
     // Sessions roll over on the local clock hour. Two reasons: it bounds how
@@ -351,9 +359,15 @@ fn run(
                 }
                 ContextRecord::Power { event, .. } => {
                     // Spec section 10: resuming from sleep is a session
-                    // boundary. QPC does not advance while suspended, so
-                    // timestamps either side of a sleep are not comparable --
-                    // splitting keeps every session's clock internally honest.
+                    // boundary.
+                    //
+                    // Note QPC *does* keep advancing while suspended on many
+                    // machines -- measured here as a clean 41.6-hour jump in
+                    // t_ns across one sleep -- so the timestamps either side
+                    // remain comparable and nothing is corrupted. The split is
+                    // for analysis convenience: it keeps a multi-day gap out
+                    // of the middle of a session, and gives the far side its
+                    // own time-of-day label.
                     if event.starts_with("resume") {
                         wake_rotate = true;
                     }
@@ -376,29 +390,52 @@ fn run(
             last_sync = Instant::now();
         }
 
-        // ---- commands ----------------------------------------------------
-        let mut rotate_reason: Option<String> = None;
-
-        // Hourly rollover on the wall clock.
+        // ---- rotation ----------------------------------------------------
         let now_hour = {
             let off = crate::clock::local_offset_minutes();
             crate::clock::local_hour(crate::clock::unix_millis(), off)
         };
-        if now_hour != session_hour {
-            session_hour = now_hour;
-            rotate_reason = Some("hourly_rollover".into());
-        }
+
+        // A user request always wins; it is an explicit instruction.
+        let mut user_reason: Option<String> = None;
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                WriterCmd::NewSession(r) => rotate_reason = Some(r),
+                WriterCmd::NewSession(r) => user_reason = Some(r),
             }
         }
-        if wake_rotate && rotate_reason.is_none() {
-            rotate_reason = Some("resume_from_sleep".into());
-        }
+
+        // Resume is checked before the hour, and both are automatic.
+        //
+        // Waking from a long sleep trips both conditions, but the power
+        // notification arrives a beat after the clock has already moved on, so
+        // ordering alone is not enough -- an hourly rollover fired, then the
+        // resume rollover fired a second later, leaving a stray 7-event
+        // session between them. MIN_SESSION_LIFETIME suppresses the second
+        // one, and any other automatic rotation that lands on a session too
+        // young to be worth keeping.
+        let automatic = if wake_rotate {
+            Some("resume_from_sleep".to_string())
+        } else if now_hour != session_hour {
+            Some("hourly_rollover".to_string())
+        } else {
+            None
+        };
+
+        let rotate_reason = match (user_reason, automatic) {
+            (Some(u), _) => Some(u),
+            (None, Some(a)) if session_age.elapsed() >= MIN_SESSION_LIFETIME => Some(a),
+            (None, Some(_)) => {
+                // Too young to roll. Absorb the hour change so it does not
+                // retrigger every iteration until the next hour.
+                session_hour = now_hour;
+                None
+            }
+            (None, None) => None,
+        };
 
         if let Some(reason) = rotate_reason {
             if !finishing {
+                session_hour = now_hour;
                 // Flush whatever is still buffered into the outgoing session
                 // before closing it, so no event lands in the wrong one.
                 if !pending.is_empty() {
@@ -409,13 +446,14 @@ fn run(
                 let old = active.close(reports_now(), ring.dropped(), peak, max_latency_us);
                 println!("[writer] session {} closed ({reason})", old.header.session_id);
 
-                match Session::create_populated(&root, &reason, clock.freq()) {
+                match Session::create_populated(&root, &reason, &clock) {
                     Ok(next) => match Active::open(next, reports_now(), ring.dropped()) {
                         Ok(a) => {
                             active = a;
                             status.adopt(&active.session);
                             max_latency_us = 0;
                             last_sync = Instant::now();
+                            session_age = Instant::now();
                         }
                         Err(e) => {
                             eprintln!("[writer] cannot open replacement session: {e}");

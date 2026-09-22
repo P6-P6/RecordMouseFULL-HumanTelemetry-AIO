@@ -65,6 +65,18 @@ pub struct SessionHeader {
     /// QPC frequency. Required to interpret `t_ns` provenance and to detect a
     /// machine whose counter behaves unusually.
     pub qpc_frequency: i64,
+    /// Wall-clock milliseconds corresponding to `t_ns == 0`.
+    ///
+    /// Event timestamps are process-relative, not session-relative, so this is
+    /// the anchor that makes them absolute:
+    /// `wall_unix_ms = clock_origin_unix_ms + t_ns / 1_000_000`.
+    /// Without it a session opened mid-run cannot be placed on a calendar.
+    #[serde(default)]
+    pub clock_origin_unix_ms: u64,
+    /// The `t_ns` value at which this session began, for callers that would
+    /// rather work in session-relative time.
+    #[serde(default)]
+    pub session_start_t_ns: u64,
 
     pub devices: Vec<DeviceInfo>,
     pub monitors: Vec<MonitorInfo>,
@@ -247,6 +259,17 @@ pub struct Session {
 
 impl Session {
     pub fn create(root: &Path, reason: &str, qpc_frequency: i64) -> std::io::Result<Self> {
+        Self::create_at(root, reason, qpc_frequency, 0, 0)
+    }
+
+    /// As `create`, but anchoring the session to the process clock.
+    pub fn create_at(
+        root: &Path,
+        reason: &str,
+        qpc_frequency: i64,
+        clock_origin_unix_ms: u64,
+        session_start_t_ns: u64,
+    ) -> std::io::Result<Self> {
         let now_ms = unix_millis();
         let iso = iso8601_utc(now_ms);
         // Filesystem-safe variant of the timestamp, plus a short suffix so two
@@ -277,6 +300,8 @@ impl Session {
             end_wall_local: None,
             end_unix_ms: None,
             qpc_frequency,
+            clock_origin_unix_ms,
+            session_start_t_ns,
             devices: Vec::new(),
             monitors: Vec::new(),
             ballistics: Ballistics::default(),
@@ -306,8 +331,18 @@ impl Session {
     /// Sessions roll over mid-run (user request, wake from sleep), and each new
     /// one must capture the environment as it is *now* -- the monitor layout or
     /// the pointer-speed slider may well be why the rollover happened.
-    pub fn create_populated(root: &Path, reason: &str, qpc_frequency: i64) -> std::io::Result<Self> {
-        let mut s = Self::create(root, reason, qpc_frequency)?;
+    pub fn create_populated(
+        root: &Path,
+        reason: &str,
+        clock: &crate::clock::Clock,
+    ) -> std::io::Result<Self> {
+        let mut s = Self::create_at(
+            root,
+            reason,
+            clock.freq(),
+            clock.origin_unix_ms(),
+            clock.now_ns(),
+        )?;
         s.header.ballistics = crate::input::ballistics::Ballistics::snapshot();
         s.header.monitors = crate::context::monitors::enumerate();
         s.header.devices = crate::input::devices::DeviceTable::new().devices().to_vec();

@@ -156,7 +156,7 @@ fn cmd_record(args: &[String]) -> std::io::Result<()> {
     let ring = Arc::new(Ring::new());
     let (ctx_tx, ctx_rx) = std::sync::mpsc::channel();
 
-    let session = Session::create_populated(&root, "startup", clock.freq())?;
+    let session = Session::create_populated(&root, "startup", &clock)?;
 
     let capture = input::raw_input::spawn(clock, Arc::clone(&ring), ctx_tx)?;
     let state = Arc::clone(&capture.state);

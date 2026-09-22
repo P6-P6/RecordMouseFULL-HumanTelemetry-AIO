@@ -279,9 +279,23 @@ a compatibility manifest.
 
 32 bytes per event, little-endian.
 
+**Timestamps.** `t_ns` counts from when recording started, not from when the
+session started, because the clock keeps running across session rollovers. Map
+it to wall clock with the header's `clock_origin_unix_ms`:
+
+```
+wall_unix_ms = clock_origin_unix_ms + t_ns / 1_000_000
+```
+
+`session_start_t_ns` is also in the header for anyone who would rather work in
+session-relative time. And note the counter keeps advancing while the machine
+sleeps on many systems -- a 41-hour gap between consecutive timestamps was
+measured here across one suspend -- so a long gap means idle-or-asleep, not
+lost data. The `power` records in `context.jsonl` distinguish the two.
+
 | Field | Type | Meaning |
 |---|---|---|
-| `t_ns` | u64 | ns since session start (QPC), at handler entry |
+| `t_ns` | u64 | QPC ns at handler entry, **relative to process start, not session start** |
 | `kind` | u8 | 1 move, 2 button, 3 wheel, 4 sync anchor |
 | `flags` | u8 | down / absolute / virtual-desktop / hwheel / attr-changed / nocoalesce / pos-stale |
 | `dev` | u8 | index into the session header device table |

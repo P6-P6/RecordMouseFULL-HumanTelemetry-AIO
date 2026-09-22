@@ -13,6 +13,13 @@ use windows_sys::Win32::System::Performance::{
 pub struct Clock {
     freq: i64,
     origin: i64,
+    /// Wall-clock time corresponding to `now_ns() == 0`.
+    ///
+    /// Event timestamps are relative to this clock, which is created once per
+    /// *process* -- not per session. Without this anchor there is no way to map
+    /// an event back to a wall-clock instant, because a session started hours
+    /// later still carries timestamps counted from here.
+    origin_unix_ms: u64,
 }
 
 impl Clock {
@@ -26,7 +33,12 @@ impl Clock {
             QueryPerformanceCounter(&mut origin);
         }
         debug_assert!(freq > 0);
-        Self { freq, origin }
+        Self { freq, origin, origin_unix_ms: unix_millis() }
+    }
+
+    /// Wall-clock milliseconds at `t_ns == 0`.
+    pub fn origin_unix_ms(&self) -> u64 {
+        self.origin_unix_ms
     }
 
     /// Nanoseconds since this clock was created.
@@ -211,6 +223,26 @@ mod tests {
         assert!(!local.contains('Z'), "{local}");
         // And a positive offset formats with a plus.
         assert!(iso8601_local(ms, 330).ends_with("+05:30"));
+    }
+
+    /// The anchor that makes process-relative event timestamps absolute.
+    #[test]
+    fn clock_origin_maps_t_ns_back_to_wall_clock() {
+        let c = Clock::new();
+        let origin = c.origin_unix_ms();
+        let before = unix_millis();
+        assert!(origin > 1_700_000_000_000, "origin looks unset: {origin}");
+        assert!(origin <= before + 50, "origin is in the future");
+
+        // Let a little real time pass, then check the documented mapping:
+        //   wall_unix_ms = clock_origin_unix_ms + t_ns / 1_000_000
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let t_ns = c.now_ns();
+        let mapped = origin + t_ns / 1_000_000;
+        let now = unix_millis();
+        let skew = (mapped as i64 - now as i64).abs();
+        assert!(skew < 250, "mapping drifted {skew} ms (mapped {mapped}, now {now})");
+        assert!(t_ns >= 50_000_000, "clock barely advanced: {t_ns} ns");
     }
 
     #[test]
