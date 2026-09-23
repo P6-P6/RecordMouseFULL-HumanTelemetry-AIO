@@ -869,11 +869,10 @@ unsafe fn refresh(hwnd: HWND, app: &mut App) {
         let off = crate::clock::local_offset_minutes();
         let local_iso = crate::clock::iso8601_local(start_ms, off);
         let hhmmss = local_iso.get(11..19).unwrap_or("").to_string();
-        let local_ms = (start_ms as i64 + off as i64 * 60_000).max(0) as u64;
         format!(
             "{}   {}, {}",
             hhmmss,
-            crate::clock::WEEKDAY_NAMES[crate::clock::weekday(local_ms) as usize],
+            crate::clock::local_weekday_name(start_ms, off),
             crate::clock::day_part(crate::clock::local_hour(start_ms, off))
         )
     } else {

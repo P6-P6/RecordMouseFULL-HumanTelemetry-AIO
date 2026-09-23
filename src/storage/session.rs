@@ -291,9 +291,8 @@ impl Session {
             start_wall_local: crate::clock::iso8601_local(now_ms, offset),
             utc_offset_minutes: offset,
             timezone: crate::clock::local_timezone_name(),
-            start_weekday: crate::clock::WEEKDAY_NAMES
-                [crate::clock::weekday(now_ms) as usize]
-                .to_string(),
+            // Local, not UTC -- see `clock::local_weekday`.
+            start_weekday: crate::clock::local_weekday_name(now_ms, offset).to_string(),
             start_local_hour: hour,
             start_day_part: crate::clock::day_part(hour).to_string(),
             end_wall_utc: None,

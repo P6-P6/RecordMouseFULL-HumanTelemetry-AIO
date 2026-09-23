@@ -120,6 +120,23 @@ pub fn weekday(unix_ms: u64) -> u8 {
 pub const WEEKDAY_NAMES: [&str; 7] =
     ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
+/// Day of the week in **local** time. 0 = Sunday.
+///
+/// Exists because calling `weekday()` on a UTC timestamp is wrong for anyone
+/// west of Greenwich and silently produces tomorrow's day for every evening
+/// session. That bug shipped: in a UTC-5 timezone every session from 19:00
+/// local onward was labelled with the next day, which corrupts exactly the
+/// day-of-week grouping this metadata exists to support.
+pub fn local_weekday(unix_ms: u64, offset_minutes: i32) -> u8 {
+    let local = (unix_ms as i64 + (offset_minutes as i64) * 60_000).max(0) as u64;
+    weekday(local)
+}
+
+/// Local weekday as a name.
+pub fn local_weekday_name(unix_ms: u64, offset_minutes: i32) -> &'static str {
+    WEEKDAY_NAMES[local_weekday(unix_ms, offset_minutes) as usize]
+}
+
 /// Hour of the day, 0-23, in local time.
 pub fn local_hour(unix_ms: u64, offset_minutes: i32) -> u8 {
     let local = (unix_ms as i64 / 1000) + (offset_minutes as i64) * 60;
@@ -187,6 +204,18 @@ mod tests {
         assert_eq!(WEEKDAY_NAMES[weekday(20_716 * 86_400_000) as usize], "Sunday");
         // ...and the day before it a Saturday, so the sequence steps correctly.
         assert_eq!(WEEKDAY_NAMES[weekday(20_715 * 86_400_000) as usize], "Saturday");
+    }
+
+    #[test]
+    fn local_weekday_uses_local_time_not_utc() {
+        // 2026-09-23T04:40Z is a Wednesday in UTC, but 23:40 Tuesday at UTC-5.
+        // The shipped bug reported Wednesday for exactly this case.
+        let ms = 20_719 * 86_400_000u64 + (4 * 3600 + 40 * 60) * 1000;
+        assert_eq!(WEEKDAY_NAMES[weekday(ms) as usize], "Wednesday", "utc sanity");
+        assert_eq!(local_weekday_name(ms, -300), "Tuesday");
+        assert_eq!(local_hour(ms, -300), 23);
+        // East of Greenwich the shift can go the other way.
+        assert_eq!(local_weekday_name(ms, 600), "Wednesday");
     }
 
     #[test]
