@@ -217,7 +217,14 @@ impl Active {
         self.carried_events + self.seg.events_written()
     }
 
-    fn close(mut self, reports_now: u64, dropped_now: u64, peak: u64, max_lat: u64) -> Session {
+    fn close(
+        mut self,
+        reports_now: u64,
+        dropped_now: u64,
+        peak: u64,
+        max_lat: u64,
+        drop_range: Option<(u64, u64)>,
+    ) -> Session {
         if let Err(e) = self.seg.sync() {
             eprintln!("[writer] final sync failed: {e}");
             self.session.header.writer_errors += 1;
@@ -229,6 +236,8 @@ impl Active {
         self.session.header.reports_received = reports_now.saturating_sub(self.base_reports);
         self.session.header.events_written = self.events_written();
         self.session.header.events_dropped = dropped_now.saturating_sub(self.base_dropped);
+        self.session.header.first_drop_t_ns = drop_range.map(|(f, _)| f);
+        self.session.header.last_drop_t_ns = drop_range.map(|(_, l)| l);
         self.session.header.peak_queue_depth = peak;
         self.session.header.max_write_latency_us = max_lat;
         if let Err(e) = self.session.finish() {
@@ -443,7 +452,13 @@ fn run(
                     pending.clear();
                 }
                 let peak = ring.peak_depth();
-                let old = active.close(reports_now(), ring.dropped(), peak, max_latency_us);
+                let old = active.close(
+                    reports_now(),
+                    ring.dropped(),
+                    peak,
+                    max_latency_us,
+                    ring.drop_range(),
+                );
                 println!("[writer] session {} closed ({reason})", old.header.session_id);
 
                 match Session::create_populated(&root, &reason, &clock) {
@@ -491,6 +506,10 @@ fn run(
             active.session.header.reports_received = reports.saturating_sub(active.base_reports);
             active.session.header.events_written = written;
             active.session.header.events_dropped = dropped.saturating_sub(active.base_dropped);
+            if let Some((f, l)) = ring.drop_range() {
+                active.session.header.first_drop_t_ns = Some(f);
+                active.session.header.last_drop_t_ns = Some(l);
+            }
             active.session.header.peak_queue_depth = ring.peak_depth();
             active.session.header.max_write_latency_us = max_latency_us;
             if let Err(e) = active.session.save() {
@@ -518,7 +537,8 @@ fn run(
     }
 
     let peak = ring.peak_depth();
-    active.close(reports_now(), ring.dropped(), peak, max_latency_us);
+    let dr = ring.drop_range();
+    active.close(reports_now(), ring.dropped(), peak, max_latency_us, dr);
 }
 
 fn rotate_segment(active: &mut Active) {

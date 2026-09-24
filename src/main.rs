@@ -19,6 +19,7 @@ mod event;
 mod export;
 mod input;
 mod ring;
+mod stats;
 mod storage;
 mod ui;
 mod windows;
@@ -59,6 +60,7 @@ fn main() {
         "verify" => cmd_verify(&args),
         "export" => cmd_export(&args),
         "info" => cmd_info(),
+        "stats" => cmd_stats(&args),
         "startup" => cmd_startup(&args),
         "-h" | "--help" | "help" => {
             print_help();
@@ -92,6 +94,7 @@ COMMANDS:
     verify [SESSION]    Read every segment back and check it against the header
     export [SESSION]    Write a session out as CSV
     info                Show devices, monitors and pointer-ballistics settings
+    stats               Audit the whole dataset: volume, health, coverage
     startup on|off      Enable/disable starting at Windows sign-in
 
 OPTIONS:
@@ -383,6 +386,20 @@ fn cmd_startup(args: &[String]) -> std::io::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Dataset-wide audit. Reads every session and derives the numbers fresh --
+/// nothing here is stored, because the recorder only ever stores raw events.
+fn cmd_stats(args: &[String]) -> std::io::Result<()> {
+    let root = data_root(args);
+    println!("HumanTelemetry dataset audit\n  {}\n", root.display());
+    let s = stats::collect(&root)?;
+    if s.sessions == 0 {
+        println!("no sessions recorded yet");
+        return Ok(());
+    }
+    stats::report(s);
+    Ok(())
 }
 
 fn cmd_info() -> std::io::Result<()> {

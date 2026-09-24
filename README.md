@@ -108,6 +108,7 @@ HumanTelemetry.exe list                # every session recorded
 HumanTelemetry.exe verify              # read the bytes back, check the header
 HumanTelemetry.exe export              # flatten a session to CSV
 HumanTelemetry.exe info                # devices, monitors, ballistics
+HumanTelemetry.exe stats               # audit the dataset: volume, health, coverage
 HumanTelemetry.exe startup on|off      # sign-in registration
 HumanTelemetry.exe record --duration 28800   # headless fixed-length capture
 ```
@@ -254,6 +255,34 @@ desktop and laptop data never silently pool together.
 The Windows version is read from the registry rather than `GetVersion`, which
 has been shimmed since Windows 8.1 and reports "6.2.9200" to any process without
 a compatibility manifest.
+
+---
+
+## Checking your dataset
+
+`stats` audits everything recorded so far and derives the numbers fresh from
+the stored events -- volume, health, behavioural units, distance spread and
+time-of-day coverage:
+
+```
+DATASET
+  sessions                      69   (65 clean, 3 interrupted, 1 in progress)
+  recording time            52.2 h   (excludes 41.6 h asleep/off)
+HEALTH
+  events written         1,507,428
+  events dropped                 0
+BEHAVIOURAL UNITS
+  movement segments          8,909
+  clicks                     4,188      click hold median  90.1 ms
+  drags                      1,745      report rate         125 Hz
+TIME-OF-DAY COVERAGE
+  morning        14 / afternoon 23 / evening 16 / night 6 / late_night 10
+  hours of day        24 / 24
+```
+
+Sleep is excluded from recording time on purpose: the performance counter keeps
+running while the machine is suspended, so a naive total counts days of sleep
+as hours of capture.
 
 ---
 

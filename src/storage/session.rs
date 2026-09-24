@@ -89,6 +89,13 @@ pub struct SessionHeader {
     pub reports_received: u64,
     pub events_written: u64,
     pub events_dropped: u64,
+    /// When loss happened, not just how much. Spec section 43 asks for the
+    /// timestamp range; a bare count leaves you knowing events vanished but
+    /// not which stretch of the recording to distrust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_drop_t_ns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_drop_t_ns: Option<u64>,
     pub peak_queue_depth: u64,
     pub max_write_latency_us: u64,
     pub writer_errors: u64,
@@ -308,6 +315,8 @@ impl Session {
             reports_received: 0,
             events_written: 0,
             events_dropped: 0,
+            first_drop_t_ns: None,
+            last_drop_t_ns: None,
             peak_queue_depth: 0,
             max_write_latency_us: 0,
             writer_errors: 0,

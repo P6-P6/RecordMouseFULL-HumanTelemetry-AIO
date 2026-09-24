@@ -8,7 +8,8 @@
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{BOOL, LPARAM, RECT, TRUE};
 use windows_sys::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+    EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, DEVMODEW, ENUM_CURRENT_SETTINGS,
+    HDC, HMONITOR, MONITORINFOEXW,
 };
 
 /// `MONITORINFOF_PRIMARY` from winuser.h. Defined here because windows-sys
@@ -36,6 +37,9 @@ pub struct MonitorInfo {
     pub work_bottom: i32,
     pub dpi_x: u32,
     pub dpi_y: u32,
+    /// Vertical refresh in Hz (spec section 9). 0 when unavailable.
+    #[serde(default)]
+    pub refresh_hz: u32,
     /// dpi / 96. 1.0 = 100% scaling, 1.5 = 150%.
     pub scaling: f32,
     pub primary: bool,
@@ -92,9 +96,20 @@ unsafe extern "system" fn cb(hmon: HMONITOR, _hdc: HDC, _rc: *mut RECT, data: LP
     let r = mi.monitorInfo.rcMonitor;
     let w = mi.monitorInfo.rcWork;
 
+    // Refresh rate is per display device, not per monitor handle, so it comes
+    // from EnumDisplaySettings against the device name rather than MONITORINFO.
+    let mut dm: DEVMODEW = std::mem::zeroed();
+    dm.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+    let refresh_hz = if EnumDisplaySettingsW(mi.szDevice.as_ptr(), ENUM_CURRENT_SETTINGS, &mut dm) != 0 {
+        dm.dmDisplayFrequency
+    } else {
+        0
+    };
+
     out.push(MonitorInfo {
         index: 0,
         device: String::from_utf16_lossy(&mi.szDevice[..end]),
+        refresh_hz,
         left: r.left,
         top: r.top,
         right: r.right,

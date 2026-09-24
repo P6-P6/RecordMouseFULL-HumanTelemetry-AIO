@@ -25,6 +25,13 @@ pub struct Ring {
     /// Consumer writes, producer reads.
     tail: AtomicU64,
     dropped: AtomicU64,
+    /// Timestamps of the first and last event ever dropped.
+    ///
+    /// A bare count tells you events vanished but not which stretch of the
+    /// recording to distrust, and that is exactly what you need when it
+    /// happens. Written only on the drop path, which is meant never to run.
+    first_drop_ns: AtomicU64,
+    last_drop_ns: AtomicU64,
     /// High-water mark of occupancy, for the health report.
     peak: AtomicU64,
 }
@@ -43,6 +50,8 @@ impl Ring {
             head: AtomicU64::new(0),
             tail: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
+            first_drop_ns: AtomicU64::new(0),
+            last_drop_ns: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         }
     }
@@ -57,6 +66,15 @@ impl Ring {
         let used = head.wrapping_sub(tail);
         if used >= CAP as u64 {
             self.dropped.fetch_add(1, Ordering::Relaxed);
+            // Record when, not just how many. Two relaxed stores on a path
+            // that should never execute.
+            let _ = self.first_drop_ns.compare_exchange(
+                0,
+                ev.t_ns,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+            self.last_drop_ns.store(ev.t_ns, Ordering::Relaxed);
             return;
         }
         if used > self.peak.load(Ordering::Relaxed) {
@@ -95,6 +113,15 @@ impl Ring {
         self.dropped.load(Ordering::Relaxed)
     }
 
+    /// Timestamp range over which events were lost, if any.
+    pub fn drop_range(&self) -> Option<(u64, u64)> {
+        let f = self.first_drop_ns.load(Ordering::Relaxed);
+        if f == 0 {
+            return None;
+        }
+        Some((f, self.last_drop_ns.load(Ordering::Relaxed)))
+    }
+
     pub fn peak_depth(&self) -> u64 {
         self.peak.load(Ordering::Relaxed)
     }
@@ -121,6 +148,16 @@ mod tests {
     }
 
     #[test]
+    fn a_ring_that_never_drops_reports_no_range() {
+        let r = Ring::new();
+        for i in 0..100 {
+            r.push(ev(i));
+        }
+        assert_eq!(r.dropped(), 0);
+        assert!(r.drop_range().is_none());
+    }
+
+    #[test]
     fn drains_in_order() {
         let r = Ring::new();
         for i in 0..100 {
@@ -141,6 +178,11 @@ mod tests {
             r.push(ev(i));
         }
         assert_eq!(r.dropped(), 500);
+
+        // And records *when* the loss happened, not merely that it did.
+        let (first, last) = r.drop_range().expect("a drop range must be recorded");
+        assert_eq!(first, CAP as u64, "first dropped event is the one after the ring filled");
+        assert_eq!(last, CAP as u64 + 499);
 
         // The events that did survive must still be the first CAP, in order --
         // a full ring drops new events, it does not overwrite old ones.
