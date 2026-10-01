@@ -54,8 +54,13 @@ impl Method {
 
 /// The command line startup should launch: recording, straight to the tray so
 /// signing in does not throw a window in the user's face.
+///
+/// Always points at the **installed local copy**, never at wherever this
+/// executable happens to be sitting. Registering a path on a cloud-synced
+/// drive produces a Run entry that looks perfectly correct and never fires,
+/// because the drive mounts after logon does. See `windows::install`.
 fn launch_command() -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate own exe: {e}"))?;
+    let exe = super::install::ensure_installed()?;
     Ok(format!("\"{}\" record --tray", exe.display()))
 }
 

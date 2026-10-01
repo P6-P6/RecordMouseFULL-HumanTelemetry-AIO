@@ -62,6 +62,8 @@ fn main() {
         "info" => cmd_info(),
         "stats" => cmd_stats(&args),
         "startup" => cmd_startup(&args),
+        "install" => cmd_install(),
+        "uninstall" => cmd_uninstall(),
         "-h" | "--help" | "help" => {
             print_help();
             Ok(())
@@ -96,6 +98,8 @@ COMMANDS:
     info                Show devices, monitors and pointer-ballistics settings
     stats               Audit the whole dataset: volume, health, coverage
     startup on|off      Enable/disable starting at Windows sign-in
+    install             Copy to local disk and enable sign-in startup
+    uninstall           Remove the startup entry and the installed copy
 
 OPTIONS:
     --data <DIR>        Data root (default:
@@ -366,6 +370,37 @@ fn cmd_export(args: &[String]) -> std::io::Result<()> {
         );
     }
     println!("-> {}", out.display());
+    Ok(())
+}
+
+/// Put a copy on local disk and point startup at it.
+///
+/// Running the recorder straight out of the project folder works fine by hand,
+/// but not at logon: the folder is on a cloud filesystem that mounts after
+/// Windows has already tried to launch it.
+fn cmd_install() -> std::io::Result<()> {
+    let exe = windows::install::ensure_installed().map_err(std::io::Error::other)?;
+    println!("installed: {}", exe.display());
+    match windows::startup::enable() {
+        Ok(m) => {
+            println!("startup  : {}", m.label());
+            println!("\nIt will start hidden in the tray when you sign in.");
+            println!("Re-run `install` after any rebuild to refresh the installed copy.");
+            Ok(())
+        }
+        Err(e) => Err(std::io::Error::other(e)),
+    }
+}
+
+fn cmd_uninstall() -> std::io::Result<()> {
+    if let Err(e) = windows::startup::disable() {
+        println!("note: {e}");
+    } else {
+        println!("startup entry removed");
+    }
+    windows::install::uninstall().map_err(std::io::Error::other)?;
+    println!("installed copy removed");
+    println!("\nRecorded data is untouched.");
     Ok(())
 }
 

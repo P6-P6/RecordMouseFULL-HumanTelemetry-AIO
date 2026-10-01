@@ -54,7 +54,18 @@ Build or download `HumanTelemetry.exe` and run it. It opens a window, starts
 recording immediately, and keeps recording when you close the window (it hides
 to the tray — use **Exit** on the tray menu to actually stop).
 
-Tick **Start when I sign in to Windows** to have it launch at logon.
+Tick **Start when I sign in to Windows** to have it launch at logon, or run
+`HumanTelemetry.exe install` once.
+
+**Startup installs a copy to local disk on purpose.** Registering the executable
+where it was built does not survive a reboot if that folder is on a cloud
+filesystem (OneDrive, Google Drive, Dropbox): Windows fires `HKCU\...\Run`
+entries almost immediately at logon, while the drive mounts seconds later. The
+launch fails against a path that does not exist yet, nothing is logged, and
+nothing retries -- a perfectly correct-looking Run entry that never fires. That
+cost a week of recording here before it was spotted. `install` copies the exe to
+`%LOCALAPPDATA%\RecordMouseFULL-HumanTelemetry-AIOin\` and points startup
+there; re-run it after a rebuild to refresh the copy.
 
 ### Where data goes
 
@@ -110,6 +121,8 @@ HumanTelemetry.exe export              # flatten a session to CSV
 HumanTelemetry.exe info                # devices, monitors, ballistics
 HumanTelemetry.exe stats               # audit the dataset: volume, health, coverage
 HumanTelemetry.exe startup on|off      # sign-in registration
+HumanTelemetry.exe install             # copy to local disk + enable startup
+HumanTelemetry.exe uninstall           # remove startup entry and installed copy
 HumanTelemetry.exe record --duration 28800   # headless fixed-length capture
 ```
 

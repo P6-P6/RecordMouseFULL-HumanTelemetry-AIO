@@ -974,6 +974,8 @@ unsafe fn toggle_startup(hwnd: HWND, app: &mut App) {
                 // Say which mechanism actually took effect. The scheduled task
                 // needs elevation and quietly falls back to the registry Run
                 // key; the user is entitled to know which one is running.
+                let where_ = crate::windows::install::installed_exe();
+                let extra_path = format!("\n\nRunning copy installed to:\n{}", where_.display());
                 let extra = if method == startup::Method::RunKey {
                     "\n\nRegistered via the registry Run key. (The scheduled-task route needs \
                      administrator rights; the Run key does not, but it cannot restart the \
@@ -983,7 +985,9 @@ unsafe fn toggle_startup(hwnd: HWND, app: &mut App) {
                 };
                 message_box(
                     hwnd,
-                    &format!("HumanTelemetry will start when you sign in.{extra}"),
+                    &format!(
+                        "HumanTelemetry will start when you sign in.{extra}{extra_path}"
+                    ),
                     "Startup",
                     MB_ICONINFORMATION,
                 );
