@@ -287,11 +287,21 @@ HEALTH
 BEHAVIOURAL UNITS
   movement segments          8,909
   clicks                     4,188      click hold median  90.1 ms
-  drags                      1,745      report rate         125 Hz
+  drags                      1,745
+REPORT RATE
+  link rate                   990 Hz   (1.01 ms, fastest sustained)
+  typical gap in use          125 /s   (8.00 ms median)
 TIME-OF-DAY COVERAGE
   morning        14 / afternoon 23 / evening 16 / night 6 / late_night 10
   hours of day        24 / 24
 ```
+
+**Link rate and typical gap are different numbers.** A 1 kHz mouse only
+transmits when it has motion to send, so moving slowly leaves it quiet between
+polls and stretches the median gap to several milliseconds while the link is
+still running at 1 kHz. Reporting only the median once made this tool label a
+1 kHz mouse as "125 Hz" for two weeks. The floor of the gap distribution is the
+link rate; the median is the duty cycle.
 
 Sleep is excluded from recording time on purpose: the performance counter keeps
 running while the machine is suspended, so a naive total counts days of sleep

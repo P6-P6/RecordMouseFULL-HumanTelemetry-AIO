@@ -78,11 +78,56 @@ pub struct Stats {
 }
 
 fn median(v: &mut [f64]) -> f64 {
+    percentile(v, 0.5)
+}
+
+/// `v` is sorted in place.
+fn percentile(v: &mut [f64], q: f64) -> f64 {
     if v.is_empty() {
         return 0.0;
     }
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    v[v.len() / 2]
+    let i = ((v.len() - 1) as f64 * q).round() as usize;
+    v[i]
+}
+
+/// How fast the device *can* report, versus how often it actually does.
+///
+/// These are different numbers and conflating them is misleading. A 1000 Hz
+/// mouse only transmits when it has motion to send: move slowly and it stays
+/// quiet between polls, so the median gap stretches to several milliseconds
+/// even though the link is running at 1 kHz the whole time.
+///
+/// Reporting only the median made this recorder label a 1 kHz mouse as
+/// "125 Hz" for two weeks, and sent its owner off to change a setting that was
+/// already correct. The floor of the gap distribution is the link rate; the
+/// median is the duty cycle.
+struct RateReport {
+    link_hz: f64,
+    link_ms: f64,
+    median_hz: f64,
+    median_ms: f64,
+    /// Share of reports arriving at (or near) the link rate.
+    at_link_pct: f64,
+}
+
+fn rate_report(gaps: &mut Vec<f64>) -> Option<RateReport> {
+    if gaps.len() < 50 {
+        return None;
+    }
+    // The 5th percentile is the sustained floor: robust against the handful of
+    // sub-millisecond gaps that burst delivery can produce.
+    let link_ms = percentile(gaps, 0.05).max(0.05);
+    let median_ms = percentile(gaps, 0.5).max(0.05);
+    let threshold = link_ms * 1.5;
+    let at = gaps.iter().filter(|&&g| g <= threshold).count();
+    Some(RateReport {
+        link_hz: 1000.0 / link_ms,
+        link_ms,
+        median_hz: 1000.0 / median_ms,
+        median_ms,
+        at_link_pct: 100.0 * at as f64 / gaps.len() as f64,
+    })
 }
 
 pub fn collect(root: &Path) -> std::io::Result<Stats> {
@@ -338,10 +383,17 @@ pub fn report(mut s: Stats) {
     if hold > 0.0 {
         println!("  click hold median   {:>12}", format!("{hold:.1} ms"));
     }
-    let gap = median(&mut s.gaps);
-    if gap > 0.0 {
-        println!("  report rate         {:>12}   (median gap {:.2} ms)",
-                 format!("{:.0} Hz", 1000.0 / gap), gap);
+    if let Some(r) = rate_report(&mut s.gaps) {
+        println!("\nREPORT RATE");
+        println!("  link rate           {:>12}   ({:.2} ms, fastest sustained)",
+                 format!("{:.0} Hz", r.link_hz), r.link_ms);
+        println!("  typical gap in use  {:>12}   ({:.2} ms median)",
+                 format!("{:.0} /s", r.median_hz), r.median_ms);
+        println!("  reports at link rate{:>12}", format!("{:.1}%", r.at_link_pct));
+        if r.median_ms > r.link_ms * 2.0 {
+            println!("  (the device stays quiet when it has no motion to send, so the");
+            println!("   median gap reflects how you move, not how fast the link runs)");
+        }
     }
 
     println!("\nDISTANCE COVERAGE");
